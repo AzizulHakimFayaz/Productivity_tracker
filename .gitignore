@@ -1,0 +1,15 @@
+# Build outputs
+dist/
+build/
+
+# ML data
+classifier_data/
+
+# Executables
+*.exe
+*.dll
+*.pkg
+
+# Python
+__pycache__/
+*.pyc
