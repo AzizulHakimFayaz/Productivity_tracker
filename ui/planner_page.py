@@ -21,11 +21,16 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QSizePolicy,
+    QSizePolicy,
     QTableView,
+    QDialog,
 )
 
 from styles.theme import BG_MAIN, BG_CARD, BG_CARD_ALT, BORDER, ACCENT, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED
 from ui.ui_effects import apply_soft_shadow
+from ui.task_dialog import CreateTaskDialog
+from widgets.timeline import TimelineWidget
+from ui.task_dialog import CreateTaskDialog
 
 
 class PlannerCalendarWidget(QCalendarWidget):
@@ -176,11 +181,11 @@ class _DayInsightPopup(QFrame):
         self.top_lbl.setStyleSheet("font-size:15px; color:#f4d879;")
         root.addWidget(self.top_lbl)
 
-        self.prod_lbl = QLabel("✓ Productive: 0m / 0m (0%)")
+        self.prod_lbl = QLabel("✓ Focus-counted productivity: 0m / 0m (0%)")
         self.prod_lbl.setStyleSheet("font-size:15px; color:#66f0bd;")
         root.addWidget(self.prod_lbl)
 
-        self.peak_lbl = QLabel("◷ Peak productive hour: —")
+        self.peak_lbl = QLabel("◷ Peak Focus Mode hour: —")
         self.peak_lbl.setStyleSheet("font-size:15px; color:#7cc6ff;")
         root.addWidget(self.peak_lbl)
 
@@ -226,8 +231,8 @@ class _DayInsightPopup(QFrame):
 
         self.date_lbl.setText(day_key)
         self.top_lbl.setText(f"⌨ Top category: {top}")
-        self.prod_lbl.setText(f"✓ Productive: {prod_mins}m / {total_mins}m ({pct}%)")
-        self.peak_lbl.setText(f"◷ Peak productive hour: {peak_label}")
+        self.prod_lbl.setText(f"✓ Focus-counted productivity: {prod_mins}m / {total_mins}m ({pct}%)")
+        self.peak_lbl.setText(f"◷ Peak Focus Mode hour: {peak_label}")
 
         hourly = info.get("productive_by_hour", [])
         if not hourly or len(hourly) < 24:
@@ -350,102 +355,7 @@ class PlannerPage(QWidget):
         right_col.setSpacing(16)
         body.addLayout(right_col, stretch=2)
 
-        form_card = _card()
-        form = QVBoxLayout(form_card)
-        form.setContentsMargins(16, 14, 16, 14)
-        form.setSpacing(10)
-        form.addWidget(self._heading("Create Task"))
 
-        self.task_title = QLineEdit()
-        self.task_title.setPlaceholderText("Task title (e.g., Prepare report)")
-        self.task_desc = QTextEdit()
-        self.task_desc.setPlaceholderText("Description / notes (optional)")
-        self.task_desc.setFixedHeight(70)
-
-        row = QHBoxLayout()
-        self.task_due = QDateTimeEdit(QDateTime.currentDateTime().addSecs(3600))
-        self.task_due.setCalendarPopup(True)
-        self.task_due.setDisplayFormat("dd MMM yyyy, hh:mm AP")
-        self.task_priority = QComboBox()
-        self.task_priority.addItems(["high", "medium", "low"])
-        self.task_reminder = QSpinBox()
-        self.task_reminder.setRange(1, 1440)
-        self.task_reminder.setValue(30)
-        self.task_reminder.setSuffix(" min early")
-        row.addWidget(self.task_due)
-        row.addWidget(self.task_priority)
-        self._mode_chip = QLabel("⟲")
-        self._mode_chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._mode_chip.setFixedSize(26, 26)
-        self._mode_chip.setStyleSheet(
-            "background:#20d6af; color:white; border:1px solid #39f2ca; border-radius:13px; font-weight:700;"
-        )
-        self._list_chip = QLabel("☰")
-        self._list_chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._list_chip.setFixedSize(26, 26)
-        self._list_chip.setStyleSheet(
-            "background:#111d34; color:#7bd8ff; border:1px solid #2f4262; border-radius:13px; font-weight:700;"
-        )
-        row.addWidget(self._mode_chip)
-        row.addWidget(self._list_chip)
-        row.addWidget(self.task_reminder)
-
-        self.add_btn = QPushButton("Add Task")
-        self.add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.add_btn.clicked.connect(self._add_task)
-        self.add_btn.setStyleSheet(
-            f"""
-            QPushButton {{
-                background-color: #22d3aa;
-                color: white;
-                border: none;
-                border-radius: 10px;
-                padding: 8px 14px;
-                font-weight: 600;
-            }}
-            QPushButton:hover {{ background-color: #2ee6bc; }}
-            """
-        )
-
-        form.addWidget(self.task_title)
-        form.addWidget(self.task_desc)
-        form.addLayout(row)
-        form.addWidget(self.add_btn, alignment=Qt.AlignmentFlag.AlignRight)
-        right_col.addWidget(form_card)
-
-        list_card = _card()
-        list_v = QVBoxLayout(list_card)
-        list_v.setContentsMargins(16, 14, 16, 14)
-        list_v.setSpacing(10)
-        list_v.addWidget(self._heading("Tasks"))
-
-        control_row = QHBoxLayout()
-        self.filter_box = QComboBox()
-        self.filter_box.addItems(["Selected day", "Next 7 days", "All pending", "Completed"])
-        self.filter_box.currentIndexChanged.connect(self.refresh_tasks)
-        control_row.addWidget(self.filter_box)
-
-        self.complete_btn = QPushButton("Mark Done")
-        self.reopen_btn = QPushButton("Reopen")
-        self.delete_btn = QPushButton("Delete")
-        for b in [self.complete_btn, self.reopen_btn, self.delete_btn]:
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setStyleSheet(
-                f"QPushButton{{background:#111d34; color:{TEXT_SECONDARY}; border:1px solid #2b3b57; border-radius:8px; padding:6px 10px;}}"
-                f"QPushButton:hover{{color:{TEXT_PRIMARY}; border:1px solid #61d6ff;}}"
-            )
-        self.complete_btn.clicked.connect(lambda: self._change_selected_status("done"))
-        self.reopen_btn.clicked.connect(lambda: self._change_selected_status("pending"))
-        self.delete_btn.clicked.connect(self._delete_selected)
-        control_row.addWidget(self.complete_btn)
-        control_row.addWidget(self.reopen_btn)
-        control_row.addWidget(self.delete_btn)
-        control_row.addStretch()
-        list_v.addLayout(control_row)
-
-        self.task_list = QListWidget()
-        list_v.addWidget(self.task_list)
-        right_col.addWidget(list_card, stretch=1)
 
         # Activity Explorer (separate section)
         history_card = _card()
@@ -489,10 +399,11 @@ class PlannerPage(QWidget):
         stats_cards.addWidget(self._prod_card, 2)
         history_v.addLayout(stats_cards)
 
-        self._activity_list = QListWidget()
-        self._activity_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self._activity_list.setMinimumHeight(200)
-        self._activity_list.setSpacing(6)
+        self._activity_list = TimelineWidget()
+        self._activity_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._activity_list.setMinimumHeight(400)
+        self._activity_list.sessionClicked.connect(self._show_session_details)
+        self._activity_list.hourClicked.connect(self._show_hour_details)
         history_v.addWidget(self._activity_list)
         right_col.addWidget(history_card, stretch=1)
 
@@ -572,76 +483,22 @@ class PlannerPage(QWidget):
         self._refresh_calendar_markers()
         self.refresh_tasks()
 
-    def _add_task(self):
-        if not self._engine:
-            return
-        title = self.task_title.text().strip()
-        if not title:
-            QMessageBox.warning(self, "Planner", "Please enter a task title.")
-            return
-        due_dt = self.task_due.dateTime().toPyDateTime()
-        self._engine.db_manager.add_task(
-            title=title,
-            description=self.task_desc.toPlainText(),
-            due_ts=due_dt.timestamp(),
-            priority=self.task_priority.currentText(),
-            remind_before_min=self.task_reminder.value(),
-        )
-        self.task_title.clear()
-        self.task_desc.clear()
-        self.refresh_tasks()
-
     def refresh_tasks(self):
         if not self._engine:
             return
-        mode = self.filter_box.currentText() if hasattr(self, "filter_box") else "Selected day"
+        
         all_tasks = self._engine.db_manager.get_tasks()
         self._all_tasks = all_tasks
 
-        now = datetime.datetime.now().timestamp()
         sel_date = self.calendar.selectedDate().toPyDate()
         selected_day_tasks = self._engine.db_manager.get_tasks_due_on_date(sel_date)
-
-        if mode == "Selected day":
-            tasks = selected_day_tasks
-        elif mode == "Next 7 days":
-            end = now + 7 * 24 * 3600
-            tasks = [t for t in all_tasks if now <= t["due_ts"] <= end and t["status"] == "pending"]
-        elif mode == "Completed":
-            tasks = [t for t in all_tasks if t["status"] == "done"]
-        else:
-            tasks = [t for t in all_tasks if t["status"] == "pending"]
-
-        self.task_list.clear()
-        for t in tasks:
-            due_dt = datetime.datetime.fromtimestamp(t["due_ts"])
-            due_txt = due_dt.strftime("%d %b %Y, %I:%M %p")
-            status = "DONE" if t["status"] == "done" else "PENDING"
-            overdue = (t["status"] == "pending" and t["due_ts"] < now)
-            badge = "OVERDUE" if overdue else status
-            pri = str(t.get("priority", "medium")).upper()
-            desc = t["description"].strip()
-            icon = "✅" if t["status"] == "done" else ("⚠" if overdue else "🗂")
-            line1 = f"{icon} [{badge}]  {t['title']}  •  {pri}"
-            line2 = f"Due: {due_txt}   •   Remind: {t.get('remind_before_min', 30)} min early"
-            text = line1 + "\n" + line2 + (f"\n{desc}" if desc else "")
-            item = QListWidgetItem(text)
-            item.setData(Qt.ItemDataRole.UserRole, t["id"])
-            if overdue:
-                item.setForeground(Qt.GlobalColor.red)
-            self.task_list.addItem(item)
-
-        if not tasks:
-            self.task_list.clear()
-            empty_item = QListWidgetItem("📄  No tasks yet for this day. Ready to add one?")
-            empty_item.setForeground(QColor("#93a4c4"))
-            self.task_list.addItem(empty_item)
 
         pending = len([t for t in all_tasks if t["status"] == "pending"])
         done = len([t for t in all_tasks if t["status"] == "done"])
         due_today = len([t for t in selected_day_tasks if t["status"] == "pending"])
         self._stats_lbl.setText(f"Pending: {pending}   |   Completed: {done}   |   Due on selected day: {due_today}")
         self._task_count_lbl.setText(f"Task count: {len(all_tasks)}")
+        
         self._refresh_calendar_markers()
         self._refresh_activity_insights()
 
@@ -685,7 +542,7 @@ class PlannerPage(QWidget):
         top_app = summary["top_app"]
         self._activity_summary_lbl.setText(
             f"Top category: {top_cat}  |  Top app/site: {top_app}\n"
-            f"Productive time: {prod_min}m / {total_min}m ({ratio}%)"
+            f"Focus-counted productivity: {prod_min}m / {total_min}m ({ratio}%)"
         )
         self._top_cat_card._val_label.setText(top_cat)
         self._top_app_card._val_label.setText(str(top_app))
@@ -695,101 +552,8 @@ class PlannerPage(QWidget):
             self._prod_ring.set_value(max(0, min(100, ratio)))
         self._prod_card._val_label.setText(f"{ratio}%")
 
-        self._activity_list.clear()
-        if not sessions:
-            empty = QListWidgetItem("🧭  No activity data in this range yet. Start tracking apps to see timeline insights.")
-            empty.setForeground(QColor("#93a4c4"))
-            self._activity_list.addItem(empty)
-            return
-
-        for s in sessions:
-            st = datetime.datetime.fromtimestamp(s["start_time"]).strftime("%d %b %H:%M")
-            et = datetime.datetime.fromtimestamp(s["end_time"]).strftime("%H:%M")
-            task_title = s["title"] if s["title"] and s["title"] != "Unknown Title" else s["app"]
-            if len(task_title) > 58:
-                task_title = task_title[:55] + "..."
-            domain = f" • {s['domain']}" if s.get("domain") else ""
-            mins = max(1, int(float(s["duration"]) // 60))
-            cat = str(s["category"]).title()
-            cat_icon = "💻" if cat == "Coding" else ("🎬" if cat == "Entertainment" else ("📚" if cat == "Learning" else "•"))
-            item = QListWidgetItem()
-            row_widget = self._make_activity_row(
-                icon=cat_icon,
-                meta=f"{st}   [{cat}]   {mins}m",
-                title=task_title,
-                source=f"{s['app']}{domain}",
-                app_chip=(s.get("domain") or s.get("app") or "App"),
-                category=cat,
-            )
-            item.setSizeHint(row_widget.sizeHint())
-            self._activity_list.addItem(item)
-            self._activity_list.setItemWidget(item, row_widget)
-
-    def _make_activity_row(
-        self,
-        icon: str,
-        meta: str,
-        title: str,
-        source: str,
-        app_chip: str,
-        category: str,
-    ) -> QWidget:
-        wrap = QFrame()
-        wrap.setObjectName("activityRow")
-        wrap.setStyleSheet(
-            """
-            QFrame#activityRow {
-                background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 rgba(19,31,55,0.88), stop:1 rgba(17,28,48,0.78));
-                border: 1px solid #3a4f71;
-                border-radius: 10px;
-            }
-            """
-        )
-        h = QHBoxLayout(wrap)
-        h.setContentsMargins(8, 5, 8, 5)
-        h.setSpacing(10)
-
-        badge = QLabel(icon)
-        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        badge.setFixedSize(24, 24)
-        if category in {"Coding", "Learning", "Writing"}:
-            badge.setStyleSheet("background:#12364a; border:1px solid #2fd6b4; border-radius:6px;")
-        elif category in {"Entertainment", "Browsing"}:
-            badge.setStyleSheet("background:#3a1e32; border:1px solid #ff6b6b; border-radius:6px;")
-        else:
-            badge.setStyleSheet("background:#1f2f4a; border:1px solid #4f79b8; border-radius:6px;")
-        h.addWidget(badge)
-
-        v = QVBoxLayout()
-        v.setSpacing(0)
-        meta_lbl = QLabel(meta)
-        meta_lbl.setStyleSheet("color:#a8b8d8; font-size:10px; border:none; background:transparent;")
-        title_lbl = QLabel(title)
-        title_lbl.setStyleSheet("color:#e7efff; font-size:11px; font-weight:700; border:none; background:transparent;")
-        source_text = source.replace(" • ", " ")
-        source_lbl = QLabel(source_text)
-        source_lbl.setStyleSheet("color:#66d7bf; font-size:10px; border:none; background:transparent;")
-        source_lbl.setMaximumHeight(14)
-        v.addWidget(meta_lbl)
-        v.addWidget(title_lbl)
-        v.addWidget(source_lbl)
-        h.addLayout(v, 1)
-
-        chip_text = str(app_chip).split(" ")[0]
-        if "youtube" in chip_text.lower():
-            chip_text = "🔴 YouTube"
-        elif "chrome" in chip_text.lower():
-            chip_text = "🌐 Chrome"
-        elif "python" in chip_text.lower():
-            chip_text = "🐍 Python"
-        elif "code" in chip_text.lower() or "cursor" in chip_text.lower():
-            chip_text = "⌨ Code"
-        chip = QLabel(chip_text)
-        chip.setStyleSheet(
-            "background:#1a2a43; color:#e6f0ff; border:1px solid #3f5777; border-radius:8px; padding:3px 9px; font-size:10px;"
-        )
-        h.addWidget(chip, 0, Qt.AlignmentFlag.AlignVCenter)
-        return wrap
+        start_ts, end_ts = self._selected_time_range()
+        self._activity_list.set_sessions(sessions, start_ts, end_ts)
 
     def _refresh_calendar_markers(self):
         if not self._engine:
@@ -873,6 +637,98 @@ class PlannerPage(QWidget):
             self._current_hover_day = None
         return super().eventFilter(obj, event)
 
+    def _show_session_details(self, s: dict):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Session Record")
+        dialog.setFixedSize(550, 95)
+        dialog.setStyleSheet(f"QDialog {{ background-color: #111d34; border: 1px solid #2f4262; border-radius: 10px; }}")
+        dialog.setWindowFlags(dialog.windowFlags() | Qt.WindowType.FramelessWindowHint)
+        
+        v = QVBoxLayout(dialog)
+        v.setContentsMargins(10, 10, 10, 10)
+        
+        st = datetime.datetime.fromtimestamp(s.get("start_time", 0)).strftime("%d %b %H:%M")
+        mins = max(1, int(float(s.get("duration", 0)) // 60))
+        task_title = s.get("title") if s.get("title") and s.get("title") != "Unknown Title" else s.get("app")
+        if len(task_title) > 58:
+            task_title = task_title[:55] + "..."
+        domain = f" • {s.get('domain')}" if s.get("domain") else ""
+        cat = str(s.get("category", "")).title()
+        cat_icon = "💻" if cat == "Coding" else ("🎬" if cat == "Entertainment" else ("📚" if cat == "Learning" else "•"))
+        
+        meta = f"{st}   [{cat}]   {mins}m"
+        source = f"{s.get('app')}{domain}"
+        app_chip = (s.get("domain") or s.get("app") or "App")
+        
+        wrap = QFrame()
+        wrap.setStyleSheet(
+            """
+            QFrame {
+                background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 rgba(19,31,55,0.88), stop:1 rgba(17,28,48,0.78));
+                border: 1px solid #3a4f71;
+                border-radius: 10px;
+            }
+            """
+        )
+        h = QHBoxLayout(wrap)
+        h.setContentsMargins(8, 5, 8, 5)
+        h.setSpacing(10)
+
+        badge = QLabel(cat_icon)
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        badge.setFixedSize(24, 24)
+        if cat in {"Coding", "Learning", "Writing"}:
+            badge.setStyleSheet("background:#12364a; border:1px solid #2fd6b4; border-radius:6px;")
+        elif cat in {"Entertainment", "Browsing"}:
+            badge.setStyleSheet("background:#3a1e32; border:1px solid #ff6b6b; border-radius:6px;")
+        else:
+            badge.setStyleSheet("background:#1f2f4a; border:1px solid #4f79b8; border-radius:6px;")
+        h.addWidget(badge)
+
+        info_v = QVBoxLayout()
+        info_v.setSpacing(0)
+        meta_lbl = QLabel(meta)
+        meta_lbl.setStyleSheet("color:#a8b8d8; font-size:10px; border:none; background:transparent;")
+        title_lbl = QLabel(task_title)
+        title_lbl.setStyleSheet("color:#e7efff; font-size:11px; font-weight:700; border:none; background:transparent;")
+        source_text = source.replace(" • ", " ")
+        source_lbl = QLabel(source_text)
+        source_lbl.setStyleSheet("color:#66d7bf; font-size:10px; border:none; background:transparent;")
+        source_lbl.setMaximumHeight(14)
+        info_v.addWidget(meta_lbl)
+        info_v.addWidget(title_lbl)
+        info_v.addWidget(source_lbl)
+        h.addLayout(info_v, 1)
+
+        chip_text = str(app_chip).split(" ")[0]
+        if "youtube" in chip_text.lower():
+            chip_text = "🔴 YouTube"
+        elif "chrome" in chip_text.lower():
+            chip_text = "🌐 Chrome"
+        elif "python" in chip_text.lower():
+            chip_text = "🐍 Python"
+        elif "code" in chip_text.lower() or "cursor" in chip_text.lower():
+            chip_text = "⌨ Code"
+        chip = QLabel(chip_text)
+        chip.setStyleSheet(
+            "background:#1a2a43; color:#e6f0ff; border:1px solid #3f5777; border-radius:8px; padding:3px 9px; font-size:10px;"
+        )
+        h.addWidget(chip, 0, Qt.AlignmentFlag.AlignVCenter)
+        
+        v.addWidget(wrap)
+        
+        close_btn = QPushButton("Close")
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.setStyleSheet(f"QPushButton {{ background-color: #2b3b57; color: white; padding: 4px 15px; border-radius: 5px; border: none; font-weight: bold; }} QPushButton:hover {{ background-color: #3f5777; }}")
+        close_btn.clicked.connect(dialog.accept)
+        
+        btn_layer = QHBoxLayout()
+        btn_layer.addStretch()
+        btn_layer.addWidget(close_btn)
+        v.addLayout(btn_layer)
+        
+        dialog.exec()
+
     def _date_from_index(self, index) -> QDate | None:
         """
         Convert a hovered calendar index to actual date.
@@ -947,3 +803,81 @@ class PlannerPage(QWidget):
             return
         self._engine.db_manager.delete_task(task_id)
         self.refresh_tasks()
+
+    def _show_hour_details(self, hour: int):
+        sel_date = self.calendar.selectedDate().toPyDate()
+        actual_hour = hour % 24
+        
+        dt_start = datetime.datetime.combine(sel_date, datetime.time(hour=actual_hour))
+        dt_end = dt_start + datetime.timedelta(hours=1)
+        
+        t_start = dt_start.timestamp()
+        t_end = dt_end.timestamp()
+        
+        sessions = []
+        all_sess = self._activity_list.painter.sessions
+        for s in all_sess:
+            st = s.get("start_time", 0)
+            et = s.get("end_time", 0)
+            
+            dt_s = datetime.datetime.fromtimestamp(st)
+            # If the visual rendering placed it starting in this hour, or proper time overlap exists
+            if dt_s.hour == actual_hour or (st < t_end and et > t_start):
+                sessions.append(s)
+                
+        sessions.sort(key=lambda x: x.get("start_time", 0))
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Activity for {dt_start.strftime('%I %p')}")
+        dialog.setFixedSize(450, 500)
+        dialog.setStyleSheet(f"QDialog {{ background-color: #111d34; border: 1px solid #2f4262; border-radius: 10px; }}")
+        dialog.setWindowFlags(dialog.windowFlags() | Qt.WindowType.FramelessWindowHint)
+        
+        v = QVBoxLayout(dialog)
+        
+        header = QHBoxLayout()
+        title_lbl = QLabel(f"Activity: {dt_start.strftime('%I %p')} - {dt_end.strftime('%I %p')}")
+        title_lbl.setStyleSheet("color: white; font-size: 16px; font-weight: bold;")
+        header.addWidget(title_lbl)
+        
+        close_btn = QPushButton("✕")
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.clicked.connect(dialog.accept)
+        close_btn.setStyleSheet("background: transparent; color: #a8b8d8; font-size: 16px; font-weight: bold; border: none;")
+        header.addWidget(close_btn, 0, Qt.AlignmentFlag.AlignRight)
+        
+        v.addLayout(header)
+        
+        list_w = QListWidget()
+        list_w.setStyleSheet("""
+            QListWidget { background: transparent; border: none; outline: none; }
+            QListWidget::item { padding: 8px; border-bottom: 1px solid #1f2f4a; }
+            QScrollBar:vertical { width: 6px; background: #0f1930; border-radius: 3px; }
+            QScrollBar::handle:vertical { background: #3f5777; border-radius: 3px; }
+        """)
+        list_w.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        v.addWidget(list_w)
+        
+        if not sessions:
+            empty = QListWidgetItem(f"No activity matches hour {actual_hour}. (Total tracked today: {len(all_sess)})")
+            empty.setForeground(QColor("#6b7280"))
+            list_w.addItem(empty)
+        else:
+            for s in sessions:
+                st = datetime.datetime.fromtimestamp(s.get("start_time", 0)).strftime("%M:%S")
+                # cap title
+                title = s.get("title") or s.get("app")
+                if len(title) > 40:
+                    title = title[:37] + "..."
+                
+                cat = str(s.get("category", "")).title()
+                cat_icon = "💻" if cat in ("Coding", "Learning", "Writing") else ("🎬" if cat in ("Entertainment", "Browsing") else "🔵")
+                mins = max(1, int(float(s.get("duration", 0)) // 60))
+                
+                text = f"{st}   {cat_icon}   {title} ({mins}m)"
+                item = QListWidgetItem(text)
+                item.setForeground(QColor("#e2e8f0"))
+                item.setFont(QFont("Segoe UI", 10))
+                list_w.addItem(item)
+                
+        dialog.exec()

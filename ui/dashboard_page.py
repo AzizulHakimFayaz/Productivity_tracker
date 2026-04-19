@@ -14,11 +14,12 @@ from ui.attention_dialog import show_attention_dialog
 
 from widgets.circular_progress import CircularProgress
 from widgets.charts import MiniLineChart
+from widgets.focus_mode import CategoryTagSelector, DEFAULT_WARNING_CATEGORIES, category_label
 from ui.ui_effects import apply_soft_shadow
 
 from styles.theme import (
-    BG_MAIN, BG_CARD, BG_CARD_ALT, BORDER,
-    ACCENT, ACCENT_PURPLE, ACTIVE_CARD,
+    BG_MAIN, BG_CARD, BG_CARD_ALT, BORDER, BORDER_LIGHT,
+    ACCENT, ACCENT_PURPLE, ACCENT_GLOW, ACTIVE_CARD,
     TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED,
     GREEN, YELLOW, DANGER, ORANGE,
 )
@@ -37,13 +38,16 @@ def _lbl(text: str, size: int = 12, bold: bool = False,
     return l
 
 
-def _card(radius: int = 12, bg: str = BG_CARD) -> QFrame:
+def _card(radius: int = 14, bg: str = BG_CARD) -> QFrame:
     f = QFrame()
     f.setStyleSheet(f"""
         QFrame {{
             background-color: {bg};
             border: 1px solid {BORDER};
             border-radius: {radius}px;
+        }}
+        QFrame:hover {{
+            border: 1px solid {BORDER_LIGHT};
         }}
     """)
     return f
@@ -80,9 +84,10 @@ class FocusScoreCard(QFrame):
         super().__init__(parent)
         self.setStyleSheet(f"""
             QFrame {{
-                background-color: {BG_CARD};
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #6366f114, stop:0.5 {BG_CARD}, stop:1 {BG_CARD});
                 border: 1px solid {BORDER};
-                border-radius: 14px;
+                border-radius: 16px;
             }}
         """)
         self.setMinimumWidth(190)
@@ -164,10 +169,10 @@ class ProductiveTimeCard(QFrame):
         super().__init__(parent)
         self.setStyleSheet(f"""
             QFrame {{
-                background-color: {BG_CARD};
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #10b98114, stop:0.5 {BG_CARD}, stop:1 {BG_CARD});
                 border: 1px solid {BORDER};
-                border-radius: 14px;
-                border: none;
+                border-radius: 16px;
             }}
         """)
         self.setMinimumWidth(220)
@@ -223,7 +228,7 @@ class ProductiveTimeCard(QFrame):
 
         v.addSpacing(8)
 
-        self._goal_lbl = _lbl("Goal: 7h 00m", 10, color=TEXT_MUTED)
+        self._goal_lbl = _lbl("Goal: 7h 00m counted inside Focus Mode", 10, color=TEXT_MUTED)
         v.addWidget(self._goal_lbl)
 
         v.addStretch()
@@ -333,9 +338,10 @@ class ActiveSessionCard(QFrame):
         super().__init__(parent)
         self.setStyleSheet(f"""
             QFrame {{
-                background-color: {ACTIVE_CARD};
-                border: none;
-                border-radius: 14px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #4338ca, stop:0.6 #312e81, stop:1 #1e1b4b);
+                border: 1px solid #4f46e5;
+                border-radius: 16px;
             }}
         """)
         self.setMinimumWidth(240)
@@ -516,7 +522,7 @@ class RightStatsPanel(QFrame):
 
         v.addStretch()
 
-    def update_data(self, breakdown: list, total_secs: float):
+    def update_data(self, breakdown: list, total_secs: float, focus_score: int = 0):
         """
         breakdown: [(category, percentage, duration_secs), ...]
         """
@@ -575,24 +581,19 @@ class RightStatsPanel(QFrame):
             self._cat_layout.addWidget(row)
 
         # Update tip based on breakdown
-        productive_cats = {"coding", "learning", "writing", "communication", "designing", "planning", "reading", "meetings"}
-        prod_pct = sum(
-            pct for cat, pct, _ in breakdown
-            if cat.lower() in productive_cats
-        )
-        if prod_pct >= 70:
+        if focus_score >= 70:
             self._tip_lbl.setText(
-                "Excellent focus today! You're in the top 20% of productive sessions.")
+                "Excellent Focus Mode quality today. Your sprint time is staying sharply on task.")
             self._trend_badge.setText("High Focus")
             self._trend_badge.setStyleSheet(f"color:{GREEN}; background:transparent;")
-        elif prod_pct >= 40:
+        elif focus_score >= 40:
             self._tip_lbl.setText(
-                "Good progress! Try to reduce distractions in the next session.")
+                "Good progress. A little less drift inside your next sprint will raise the score quickly.")
             self._trend_badge.setText("Moderate")
             self._trend_badge.setStyleSheet(f"color:{YELLOW}; background:transparent;")
         else:
             self._tip_lbl.setText(
-                "You've been spending time on non-productive activities. Time to refocus!")
+                "Start Focus Mode to make productivity count, then protect the sprint from distractions.")
             self._trend_badge.setText("Needs Focus")
             self._trend_badge.setStyleSheet(f"color:{DANGER}; background:transparent;")
 
@@ -601,6 +602,169 @@ class RightStatsPanel(QFrame):
             chart_data = [pct for _, pct, _ in breakdown]
             self._chart.data = chart_data
             self._chart.update()
+
+
+class FocusModeCard(QFrame):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._engine = None
+        self._syncing = False
+        self._enabled = True
+        self.setStyleSheet(
+            f"""
+            QFrame {{
+                background-color: {BG_CARD};
+                border: 1px solid {BORDER};
+                border-radius: 14px;
+            }}
+            """
+        )
+        self._build()
+
+    def _build(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 18, 20, 18)
+        root.setSpacing(12)
+
+        header = QHBoxLayout()
+        title_col = QVBoxLayout()
+        title_col.setSpacing(4)
+        title_col.addWidget(_lbl("Focus Mode", 15, bold=True))
+        title_col.addWidget(
+            _lbl(
+                "Turn on attention nudges and pick the activity categories that should count as distractions.",
+                11,
+                color=TEXT_SECONDARY,
+                wrap=True,
+            )
+        )
+        header.addLayout(title_col, stretch=1)
+
+        self._status_badge = QLabel("")
+        self._status_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._status_badge.setFixedHeight(30)
+        self._status_badge.setMinimumWidth(96)
+        header.addWidget(self._status_badge, alignment=Qt.AlignmentFlag.AlignTop)
+        root.addLayout(header)
+
+        controls = QHBoxLayout()
+        controls.setSpacing(12)
+
+        self._toggle_btn = QPushButton()
+        self._toggle_btn.setCheckable(True)
+        self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._toggle_btn.setFixedHeight(38)
+        self._toggle_btn.clicked.connect(self._toggle_focus_mode)
+        controls.addWidget(self._toggle_btn, stretch=0)
+
+        self._summary_lbl = _lbl("", 11, color=TEXT_MUTED, wrap=True)
+        controls.addWidget(self._summary_lbl, stretch=1)
+        root.addLayout(controls)
+
+        root.addWidget(_divider())
+
+        root.addWidget(_lbl("Watched Categories", 10, bold=True))
+
+        self._categories = CategoryTagSelector()
+        self._categories.categories_changed.connect(self._categories_changed)
+        root.addWidget(self._categories)
+
+        self._details_lbl = _lbl("", 10, color=TEXT_MUTED, wrap=True)
+        root.addWidget(self._details_lbl)
+
+    def set_engine(self, engine):
+        self._engine = engine
+        if not engine:
+            return
+        try:
+            engine.settings_changed.connect(self._sync_from_settings)
+        except TypeError:
+            pass
+        self._sync_from_settings(engine.get_settings())
+
+    def _sync_from_settings(self, settings: dict):
+        self._syncing = True
+        self._enabled = bool(settings.get("alerts_enabled", True))
+        categories = settings.get("warning_categories", DEFAULT_WARNING_CATEGORIES)
+        warn_after = int(settings.get("warning_threshold_minutes", 10))
+        cooldown = int(settings.get("warning_cooldown_minutes", 30))
+
+        self._toggle_btn.setChecked(self._enabled)
+        self._toggle_btn.setText("Focus Mode On" if self._enabled else "Focus Mode Off")
+        self._toggle_btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                background-color: {"#1d4ed8" if self._enabled else BG_CARD_ALT};
+                color: {"white" if self._enabled else TEXT_SECONDARY};
+                border: 1px solid {"#3b82f6" if self._enabled else BORDER};
+                border-radius: 10px;
+                padding: 0 16px;
+                font-weight: 700;
+            }}
+            QPushButton:hover {{
+                background-color: {"#2563eb" if self._enabled else "#3f4d63"};
+                color: white;
+            }}
+            """
+        )
+
+        self._status_badge.setText("ACTIVE" if self._enabled else "PAUSED")
+        self._status_badge.setStyleSheet(
+            f"""
+            QLabel {{
+                color: {"#bfdbfe" if self._enabled else TEXT_MUTED};
+                background-color: {"#1e3a8a" if self._enabled else BG_CARD_ALT};
+                border: 1px solid {"#3b82f6" if self._enabled else BORDER};
+                border-radius: 14px;
+                padding: 0 12px;
+                font-size: 10px;
+                font-weight: 700;
+                letter-spacing: 1px;
+            }}
+            """
+        )
+
+        self._categories.set_categories(categories, emit_signal=False)
+
+        if categories:
+            readable = ", ".join(category_label(cat) for cat in categories)
+            self._summary_lbl.setText(f"Focus Mode watches: {readable}.")
+        else:
+            self._summary_lbl.setText(
+                "No watched categories selected yet. Add the activities that should trigger attention alerts."
+            )
+
+        self._details_lbl.setText(
+            f"Warnings appear after about {warn_after} minute(s) in a watched category, then cool down for {cooldown} minute(s)."
+        )
+        self._syncing = False
+
+    def _toggle_focus_mode(self, checked: bool):
+        if self._syncing:
+            return
+        self._enabled = bool(checked)
+        if self._engine:
+            self._engine.update_settings({"alerts_enabled": self._enabled})
+        else:
+            self._sync_from_settings(
+                {
+                    "alerts_enabled": self._enabled,
+                    "warning_categories": self._categories.categories(),
+                }
+            )
+
+    def _categories_changed(self, categories: list[str]):
+        if self._syncing:
+            return
+        if self._engine:
+            self._engine.update_settings({"warning_categories": categories})
+        else:
+            self._sync_from_settings(
+                {
+                    "alerts_enabled": self._enabled,
+                    "warning_categories": categories,
+                }
+            )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -721,7 +885,10 @@ class ActivityTimeline(QFrame):
             QFrame {{
                 background-color: {BG_CARD};
                 border: 1px solid {BORDER};
-                border-radius: 14px;
+                border-radius: 16px;
+            }}
+            QFrame:hover {{
+                border: 1px solid {BORDER_LIGHT};
             }}
         """)
         self._build()
@@ -817,23 +984,25 @@ class ActivityTimeline(QFrame):
             if self.time_frame == tf:
                 tab.setStyleSheet(f"""
                     QPushButton {{
-                        background-color: {ACCENT};
+                        background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                            stop:0 #6366f1, stop:1 #a855f7);
                         color: white;
                         border-radius: 8px;
                         border: none;
-                        font-weight: 600;
+                        font-weight: 700;
                     }}
                 """)
             else:
                 tab.setStyleSheet(f"""
                     QPushButton {{
-                        background-color: transparent;
+                        background-color: {BG_CARD_ALT};
                         color: {TEXT_SECONDARY};
                         border: none;
                         border-radius: 8px;
                     }}
                     QPushButton:hover {{
                         color: {TEXT_PRIMARY};
+                        background-color: {BORDER_LIGHT};
                     }}
                 """)
 
@@ -854,29 +1023,35 @@ class _StatCard(QFrame):
         parent=None,
     ):
         super().__init__(parent)
+        self._icon_color = icon_color
         self.setStyleSheet(f"""
             QFrame {{
                 background-color: {BG_CARD};
                 border: 1px solid {BORDER};
-                border-radius: 14px;
+                border-radius: 16px;
+            }}
+            QFrame:hover {{
+                border: 1px solid {BORDER_LIGHT};
             }}
         """)
-        self.setFixedHeight(90)
+        self.setFixedHeight(94)
         self._build(icon, icon_color, label, value, sub, sub_color)
 
     def _build(self, icon, icon_color, label, value, sub, sub_color):
         h = QHBoxLayout(self)
         h.setContentsMargins(18, 0, 18, 0)
-        h.setSpacing(14)
+        h.setSpacing(16)
 
-        # icon circle
+        # gradient icon circle
         ic_lbl = QLabel(icon)
-        ic_lbl.setFixedSize(36, 36)
+        ic_lbl.setFixedSize(42, 42)
         ic_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        ic_lbl.setFont(QFont("Segoe UI", 16))
+        ic_lbl.setFont(QFont("Segoe UI", 18))
         ic_lbl.setStyleSheet(f"""
-            background-color: {icon_color}22;
-            border-radius: 10px;
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                stop:0 {icon_color}33, stop:1 {icon_color}18);
+            border: 1px solid {icon_color}44;
+            border-radius: 12px;
             color: {icon_color};
         """)
         h.addWidget(ic_lbl)
@@ -887,7 +1062,7 @@ class _StatCard(QFrame):
 
         val_row = QHBoxLayout()
         val_row.setSpacing(8)
-        self.val_lbl = _lbl(value, 20, bold=True)
+        self.val_lbl = _lbl(value, 22, bold=True)
         self.sub_lbl = _lbl(sub, 11, color=sub_color)
         val_row.addWidget(self.val_lbl)
         val_row.addWidget(self.sub_lbl)
@@ -998,6 +1173,10 @@ class DashboardPage(QWidget):
         self._left_layout = left
         self._apply_responsive_layout()
 
+    def set_engine(self, engine):
+        self._engine = engine
+        self.refresh_data(engine)
+
     def refresh_data(self, engine):
         """Called to dynamically fetch DB metrics into dashboard widgets."""
         if not engine:
@@ -1006,8 +1185,9 @@ class DashboardPage(QWidget):
         self._engine = engine
         
         # 1. Total Time
-        secs = engine.get_total_time("day")
-        self.prod_card.update_time(secs)
+        total_secs = engine.get_total_time("day")
+        productive_secs = engine.get_productive_time("day")
+        self.prod_card.update_time(productive_secs)
 
         # 2. Timeline
         tl_data = engine.get_timeline_data(self.timeline.time_frame)
@@ -1018,22 +1198,12 @@ class DashboardPage(QWidget):
 
         # 3. Category breakdown → Focus Score + Right Panel
         breakdown = engine.get_category_breakdown("day")
-
-        productive_cats = {"coding", "learning", "writing", "communication"}
-        productive_secs = sum(
-            dur for cat, pct, dur in breakdown
-            if cat.lower() in productive_cats
-        )
-        total_secs_bd = sum(dur for _, _, dur in breakdown)
-        if total_secs_bd > 0:
-            score = int(productive_secs / total_secs_bd * 100)
-        else:
-            score = 0
-        self.focus_card.update_score(score)
+        focus_score = engine.get_focus_score("day")
+        self.focus_card.update_score(focus_score)
 
         # Update right panel
         if self._right_panel:
-            self._right_panel.update_data(breakdown, secs)
+            self._right_panel.update_data(breakdown, total_secs, focus_score)
 
         # 4. Deep work stat
         deep = productive_secs
@@ -1171,21 +1341,22 @@ class DashboardPage(QWidget):
 
         # ── Attention alert button ────────────────────────────────────────────
         self._alert_btn = QPushButton("⚠  Attention Needed")
-        self._alert_btn.setFixedHeight(36)
+        self._alert_btn.setFixedHeight(38)
         self._alert_btn.setFont(QFont("Segoe UI", 11, QFont.Weight.DemiBold))
         self._alert_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._alert_btn.setStyleSheet(f"""
             QPushButton {{
-                background-color: #78350f;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #78350f, stop:1 #92400e);
                 color: #fbbf24;
-                border: 1px solid #b45309;
+                border: 1px solid #b4530944;
                 border-radius: 10px;
                 padding: 0 14px;
                 font-weight: 600;
             }}
             QPushButton:hover {{
-                background-color: #92400e;
-                color: #fcd34d;
+                background: #a16207;
+                color: #fde68a;
             }}
         """)
         self._alert_btn.clicked.connect(self._show_attention_dialog)
@@ -1194,20 +1365,22 @@ class DashboardPage(QWidget):
 
         # ── Show Mini Tracker button ──────────────────────────────────────────────
         self._mini_btn = QPushButton("🕒  Mini Tracker")
-        self._mini_btn.setFixedHeight(36)
+        self._mini_btn.setFixedHeight(38)
         self._mini_btn.setFont(QFont("Segoe UI", 11, QFont.Weight.DemiBold))
         self._mini_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._mini_btn.setStyleSheet(f"""
             QPushButton {{
-                background-color: {ACCENT};
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #6366f1, stop:1 #a855f7);
                 color: white;
                 border: none;
                 border-radius: 10px;
-                padding: 0 14px;
-                font-weight: 600;
+                padding: 0 16px;
+                font-weight: 700;
             }}
             QPushButton:hover {{
-                background-color: #2563eb;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #818cf8, stop:1 #c084fc);
             }}
         """)
         self._mini_btn.clicked.connect(self._show_mini_tracker)
@@ -1220,24 +1393,25 @@ class DashboardPage(QWidget):
             ("⚙", self._open_settings),
         ]:
             btn = QPushButton(icon_text)
-            btn.setFixedSize(36, 36)
+            btn.setFixedSize(38, 38)
             btn.setFont(QFont("Segoe UI", 16))
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setStyleSheet(f"""
                 QPushButton {{
                     background-color: {BG_CARD};
                     border: 1px solid {BORDER};
-                    border-radius: 10px;
+                    border-radius: 11px;
                     color: {TEXT_SECONDARY};
                 }}
                 QPushButton:hover {{
                     background-color: {BG_CARD_ALT};
+                    border: 1px solid {BORDER_LIGHT};
                     color: {TEXT_PRIMARY};
                 }}
             """)
             if callback:
                 btn.clicked.connect(callback)
-            h.addSpacing(10)
+            h.addSpacing(8)
             h.addWidget(btn)
 
         return h

@@ -1,6 +1,9 @@
 import sqlite3
 import datetime
 
+from backend.database import PRODUCTIVE_CATEGORIES
+
+
 class AnalyticsEngine:
     """Reads tracking data and provides insights to the UI."""
     def __init__(self, db_manager):
@@ -34,17 +37,60 @@ class AnalyticsEngine:
         res = self.db.cursor.fetchone()
         return res[0] if res and res[0] else 0.0
 
-    def get_category_breakdown(self, time_frame: str = "day") -> list:
+    def get_productive_time(self, time_frame: str = "day") -> float:
+        """Returns productivity time counted only inside Focus Mode sessions."""
+        start_ts = self._get_start_timestamp(time_frame)
+        placeholders = ", ".join("?" for _ in PRODUCTIVE_CATEGORIES)
+        self.db.cursor.execute(
+            f'''
+            SELECT COALESCE(SUM(duration), 0)
+            FROM activity_sessions
+            WHERE start_time >= ?
+              AND is_focus_mode_session = 1
+              AND category IN ({placeholders})
+            ''',
+            (start_ts, *PRODUCTIVE_CATEGORIES),
+        )
+        res = self.db.cursor.fetchone()
+        return res[0] if res and res[0] else 0.0
+
+    def get_focus_score(self, time_frame: str = "day") -> int:
+        """
+        Returns a 0-100 score based on how much of Focus Mode time landed in
+        productive categories.
+        """
+        start_ts = self._get_start_timestamp(time_frame)
+        self.db.cursor.execute(
+            '''
+            SELECT COALESCE(SUM(duration), 0)
+            FROM activity_sessions
+            WHERE start_time >= ?
+              AND is_focus_mode_session = 1
+            ''',
+            (start_ts,),
+        )
+        res = self.db.cursor.fetchone()
+        focus_secs = res[0] if res and res[0] else 0.0
+        if focus_secs <= 0:
+            return 0
+        productive_secs = self.get_productive_time(time_frame)
+        return int((productive_secs / focus_secs) * 100)
+
+    def get_category_breakdown(self, time_frame: str = "day", focus_mode_only: bool = False) -> list:
         """Returns [(category, percentage, duration)]"""
         start_timestamp = self._get_start_timestamp(time_frame)
+        params = [start_timestamp]
+        focus_filter = ""
+        if focus_mode_only:
+            focus_filter = " AND is_focus_mode_session = 1"
 
-        self.db.cursor.execute('''
+        self.db.cursor.execute(f'''
             SELECT category, SUM(duration) as total_duration 
             FROM activity_sessions 
-            WHERE start_time >= ? 
+            WHERE start_time >= ? {focus_filter}
             GROUP BY category
             ORDER BY total_duration DESC
-        ''', (start_timestamp,))
+        ''', params)
         
         results = self.db.cursor.fetchall()
         total_time = sum([r[1] for r in results]) if results else 0
@@ -101,16 +147,20 @@ class AnalyticsEngine:
         res = self.db.cursor.fetchone()
         return res[0] if res and res[0] else 0.0
 
-    def get_timeline_data(self, time_frame: str = "day") -> list:
+    def get_timeline_data(self, time_frame: str = "day", focus_mode_only: bool = False) -> list:
         """Returns [{start: float_hour, end: float_hour, color: category_color, time_range, task, category, duration}]"""
         start_timestamp = self._get_start_timestamp(time_frame)
+        params = [start_timestamp]
+        focus_filter = ""
+        if focus_mode_only:
+            focus_filter = " AND is_focus_mode_session = 1"
 
-        self.db.cursor.execute('''
-            SELECT start_time, end_time, app, title, category, duration
+        self.db.cursor.execute(f'''
+            SELECT start_time, end_time, app, title, category, duration, is_focus_mode_session
             FROM activity_sessions 
-            WHERE start_time >= ?
+            WHERE start_time >= ? {focus_filter}
             ORDER BY start_time ASC
-        ''', (start_timestamp,))
+        ''', params)
         
         results = self.db.cursor.fetchall()
         
@@ -129,7 +179,7 @@ class AnalyticsEngine:
         }
         
         timeline = []
-        for st, et, app, title, cat, dur in results:
+        for st, et, app, title, cat, dur, is_focus_mode_session in results:
             st_dt = datetime.datetime.fromtimestamp(st)
             et_dt = datetime.datetime.fromtimestamp(et)
             
@@ -162,6 +212,8 @@ class AnalyticsEngine:
                 "task": task_name,
                 "category": cat.title(),
                 "duration": dur_str,
+                "duration_seconds": float(dur or 0.0),
+                "is_focus_mode_session": bool(is_focus_mode_session),
                 "is_active": False # Set to active in UI if it's the very last one
             })
             

@@ -1,5 +1,30 @@
 import sys
 import os
+
+if getattr(sys, "frozen", False):
+    # PyInstaller with no-console sets sys.stdout and sys.stderr to None.
+    # Third-party libraries like FastEmbed/Loguru might crash if they attempt to write to them.
+    class DummyWriter:
+        def write(self, *args, **kwargs): pass
+        def flush(self, *args, **kwargs): pass
+        def isatty(self): return False
+
+    if sys.stdout is None:
+        sys.stdout = DummyWriter()
+    if sys.stderr is None:
+        sys.stderr = DummyWriter()
+    if getattr(sys, "__stdout__", None) is None:
+        sys.__stdout__ = DummyWriter()
+    if getattr(sys, "__stderr__", None) is None:
+        sys.__stderr__ = DummyWriter()
+    
+    # Point FastEmbed to the bundled model cache
+    # sys._MEIPASS is the temp folder pyinstaller extracts files to
+    meipass = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+    bundled_cache = os.path.join(meipass, "classifier_data", "model_cache")
+    os.environ["FASTEMBED_CACHE_PATH"] = bundled_cache
+    os.environ["XDG_CACHE_HOME"] = bundled_cache
+
 import time
 import datetime
 
@@ -189,6 +214,34 @@ def main():
             dlg.exec()   # block until user clicks Snooze / Focus Now
 
         app.backend_engine.warning_triggered.connect(on_warning)
+
+        def on_focus_prompt(kind, title, msg):
+            from ui.break_dialog import show_break_dialog
+
+            dlg = show_break_dialog(
+                title=title,
+                message=msg,
+                confirm_text="Take Break" if kind == "break" else "Wrap Session",
+                snooze_text="Snooze 10m",
+                on_confirm=lambda: app.backend_engine.take_break_now_ack(),
+                on_snooze=lambda: app.backend_engine.snooze_focus_breaks(10),
+            )
+
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
+
+            if app.tray:
+                app.tray.showMessage(
+                    title,
+                    msg,
+                    QSystemTrayIcon.MessageIcon.Information,
+                    5000,
+                )
+
+            dlg.exec()
+
+        app.backend_engine.focus_prompt_triggered.connect(on_focus_prompt)
 
         # ── Task notification loop (calendar/task system) ───────────────────
         def _notify(message_title: str, message_text: str, icon=QSystemTrayIcon.MessageIcon.Information):

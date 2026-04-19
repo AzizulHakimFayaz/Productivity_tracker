@@ -518,11 +518,28 @@ class ActivityClassifier:
     _ENSEMBLE_BOOST  = 0.03   # bonus when both models agree on same category
 
     def __init__(self, user_id: str = "default", data_dir: str = "classifier_data"):
+        import sys
+        import os
+        from pathlib import Path
         self._user_id  = user_id
-        self._data_dir = Path(data_dir)
+        
+        if getattr(sys, "frozen", False):
+            base_path = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+            self._data_dir = Path(base_path) / "classifier_data"
+        else:
+            self._data_dir = Path(data_dir)
+            
         self._data_dir.mkdir(parents=True, exist_ok=True)
         self._model_cache_dir = self._data_dir / "model_cache"
         self._model_cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Overrides should go to APPDATA to survive restart in packaged builds
+        _appdata = os.environ.get("APPDATA")
+        if _appdata:
+            self._override_dir = Path(_appdata) / "FocusIO" / "classifier_data"
+        else:
+            self._override_dir = self._data_dir
+        self._override_dir.mkdir(parents=True, exist_ok=True)
 
         self._lru   = _LRUCache(maxsize=4096)
         self._overrides: dict[str, str] = {}   # cache_key -> category
@@ -541,7 +558,7 @@ class ActivityClassifier:
 
     @property
     def _override_path(self) -> Path:
-        return self._data_dir / f"overrides_{self._user_id}.json"
+        return self._override_dir / f"overrides_{self._user_id}.json"
 
     def _load_overrides(self) -> None:
         if self._override_path.exists():
@@ -584,29 +601,42 @@ class ActivityClassifier:
             import platform
             if platform.system() == "Windows":
                 import sys
+                import ctypes
+                import importlib.util as _ilu
 
-                # When running as a PyInstaller EXE, DLLs are unpacked to
-                # sys._MEIPASS — add that location first so onnxruntime finds
-                # its native DLLs before falling back to site-packages.
-                candidate_roots = []
-                if hasattr(sys, "_MEIPASS"):
-                    candidate_roots.append(sys._MEIPASS)
+                if getattr(sys, "frozen", False):
+                    # Packaged exe: DLLs are extracted alongside the bundle
+                    base_dir = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+                    onnx_path = None
+                    for candidate in [base_dir, os.path.join(base_dir, "_internal")]:
+                        _p = os.path.join(candidate, "onnxruntime", "capi")
+                        if os.path.isdir(_p):
+                            onnx_path = _p
+                            break
 
-                import site
-                try:
-                    candidate_roots.extend(site.getsitepackages())
-                except AttributeError:
-                    pass
-                if hasattr(site, "getusersitepackages"):
-                    try:
-                        candidate_roots.append(site.getusersitepackages())
-                    except Exception:
-                        pass
-
-                for root in candidate_roots:
-                    onnx_path = os.path.join(root, "onnxruntime", "capi")
-                    if os.path.exists(onnx_path):
-                        os.add_dll_directory(onnx_path)
+                    if onnx_path:
+                        # 1) Modern search directory
+                        try:
+                            os.add_dll_directory(onnx_path)
+                        except (OSError, AttributeError):
+                            pass
+                        # 2) Legacy PATH fallback
+                        os.environ["PATH"] = onnx_path + os.pathsep + os.environ.get("PATH", "")
+                        # 3) Force-load native DLLs into process memory
+                        for _dll in ["onnxruntime_providers_shared.dll", "onnxruntime.dll"]:
+                            _fp = os.path.join(onnx_path, _dll)
+                            if os.path.isfile(_fp):
+                                try:
+                                    ctypes.CDLL(_fp)
+                                except Exception:
+                                    pass
+                else:
+                    # Dev mode: use importlib to find the real package location.
+                    _spec = _ilu.find_spec("onnxruntime")
+                    if _spec and _spec.origin:
+                        onnx_path = os.path.join(os.path.dirname(_spec.origin), "capi")
+                        if os.path.isdir(onnx_path):
+                            os.add_dll_directory(onnx_path)
 
             from fastembed import TextEmbedding
             import numpy as np
@@ -614,17 +644,18 @@ class ActivityClassifier:
             self._st_model = TextEmbedding(
                 model_name="BAAI/bge-small-en-v1.5",
                 cache_dir=str(self._model_cache_dir),
+                providers=["CPUExecutionProvider"]
             )
             # Pre-compute category embeddings (batch once at startup)
             cat_texts = [self.CATEGORY_DESCRIPTIONS[c] for c in self.CATEGORIES]
             self._cat_embeddings = np.array(list(self._st_model.embed(cat_texts)))
-            print(f"✅ [Classifier] FastEmbed loaded. {len(self.CATEGORIES)} categories embedded.")
+            print(f"[OK] [Classifier] FastEmbed loaded. {len(self.CATEGORIES)} categories embedded.")
             ai_debug_log("MODEL", "FastEmbed loaded (BAAI/bge-small-en-v1.5).")
             set_model_status("fastembed_ready")
             self._model_loaded = True
             return
         except Exception as e:
-            print(f"⚠️ [Classifier] FastEmbed unavailable ({e}). Trying TF-IDF…")
+            print(f"[WARN] [Classifier] FastEmbed unavailable ({e}). Trying TF-IDF...")
             ai_debug_log("MODEL", f"FastEmbed unavailable: {e}")
 
 

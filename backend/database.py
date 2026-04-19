@@ -5,6 +5,17 @@ import json
 import shutil
 import sys
 
+PRODUCTIVE_CATEGORIES = (
+    "coding",
+    "learning",
+    "writing",
+    "communication",
+    "designing",
+    "planning",
+    "reading",
+    "meetings",
+)
+
 def _get_data_dir() -> str:
     """
     Use a user-writable directory so installed builds work without admin rights.
@@ -128,7 +139,8 @@ class DatabaseManager:
                 title TEXT,
                 domain TEXT,
                 category TEXT NOT NULL,
-                duration REAL NOT NULL
+                duration REAL NOT NULL,
+                is_focus_mode_session INTEGER NOT NULL DEFAULT 0
             )
         ''')
 
@@ -187,8 +199,18 @@ class DatabaseManager:
             except sqlite3.OperationalError:
                 pass # Column exists
 
+        try:
+            self.cursor.execute(
+                "ALTER TABLE activity_sessions ADD COLUMN is_focus_mode_session INTEGER NOT NULL DEFAULT 0"
+            )
+        except sqlite3.OperationalError:
+            pass
+
         # Creating index to speed up time-based queries
         self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_times ON activity_sessions(start_time, end_time)')
+        self.cursor.execute(
+            'CREATE INDEX IF NOT EXISTS idx_focus_sessions ON activity_sessions(is_focus_mode_session, start_time)'
+        )
         self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(due_ts, status)')
         self.conn.commit()
 
@@ -274,10 +296,20 @@ class DatabaseManager:
 
         # Sessions
         self.cursor.execute(
-            "SELECT id, start_time, end_time, app, title, domain, category, duration "
+            "SELECT id, start_time, end_time, app, title, domain, category, duration, is_focus_mode_session "
             "FROM activity_sessions ORDER BY start_time ASC"
         )
-        cols = ["id", "start_time", "end_time", "app", "title", "domain", "category", "duration"]
+        cols = [
+            "id",
+            "start_time",
+            "end_time",
+            "app",
+            "title",
+            "domain",
+            "category",
+            "duration",
+            "is_focus_mode_session",
+        ]
         export["activity_sessions"] = [
             dict(zip(cols, row)) for row in self.cursor.fetchall()
         ]
@@ -433,6 +465,8 @@ class DatabaseManager:
         Summary for a selected time range.
         Returns total/productive seconds + top category/app.
         """
+        productive_placeholders = ", ".join("?" for _ in PRODUCTIVE_CATEGORIES)
+
         self.cursor.execute(
             '''
             SELECT COALESCE(SUM(duration), 0)
@@ -444,13 +478,14 @@ class DatabaseManager:
         total_secs = float(self.cursor.fetchone()[0] or 0.0)
 
         self.cursor.execute(
-            '''
+            f'''
             SELECT COALESCE(SUM(duration), 0)
             FROM activity_sessions
             WHERE start_time BETWEEN ? AND ?
-              AND category IN ('coding', 'learning', 'writing', 'communication', 'planning', 'reading')
+              AND is_focus_mode_session = 1
+              AND category IN ({productive_placeholders})
             ''',
-            (float(start_ts), float(end_ts)),
+            (float(start_ts), float(end_ts), *PRODUCTIVE_CATEGORIES),
         )
         productive_secs = float(self.cursor.fetchone()[0] or 0.0)
 
@@ -495,7 +530,7 @@ class DatabaseManager:
         """
         self.cursor.execute(
             '''
-            SELECT id, start_time, end_time, app, title, domain, category, duration
+            SELECT id, start_time, end_time, app, title, domain, category, duration, is_focus_mode_session
             FROM activity_sessions
             WHERE start_time BETWEEN ? AND ?
             ORDER BY start_time ASC
@@ -503,7 +538,17 @@ class DatabaseManager:
             ''',
             (float(start_ts), float(end_ts), int(limit)),
         )
-        cols = ["id", "start_time", "end_time", "app", "title", "domain", "category", "duration"]
+        cols = [
+            "id",
+            "start_time",
+            "end_time",
+            "app",
+            "title",
+            "domain",
+            "category",
+            "duration",
+            "is_focus_mode_session",
+        ]
         return [dict(zip(cols, row)) for row in self.cursor.fetchall()]
 
     def get_monthly_day_activity_tags(self, year: int, month: int) -> dict:
@@ -529,7 +574,7 @@ class DatabaseManager:
 
         self.cursor.execute(
             '''
-            SELECT start_time, category, duration
+            SELECT start_time, category, duration, is_focus_mode_session
             FROM activity_sessions
             WHERE start_time BETWEEN ? AND ?
             ORDER BY start_time ASC
@@ -538,10 +583,9 @@ class DatabaseManager:
         )
         rows = self.cursor.fetchall()
 
-        productive_set = {"coding", "learning", "writing", "communication", "planning", "reading"}
         daily = {}
-        productive_set = {"coding", "learning", "writing", "communication", "planning", "reading"}
-        for st, cat, dur in rows:
+        productive_set = set(PRODUCTIVE_CATEGORIES)
+        for st, cat, dur, is_focus_mode_session in rows:
             day_key = datetime.datetime.fromtimestamp(float(st)).date().isoformat()
             if day_key not in daily:
                 daily[day_key] = {
@@ -553,7 +597,7 @@ class DatabaseManager:
             daily[day_key]["total_secs"] += float(dur or 0.0)
             st_dt = datetime.datetime.fromtimestamp(float(st))
             hour = int(st_dt.hour)
-            if str(cat).lower() in productive_set:
+            if bool(is_focus_mode_session) and str(cat).lower() in productive_set:
                 daily[day_key]["productive_secs"] += float(dur or 0.0)
                 if 0 <= hour < 24:
                     daily[day_key]["productive_by_hour"][hour] += float(dur or 0.0)
@@ -591,12 +635,33 @@ class DatabaseManager:
 
         return out
 
-    def insert_session(self, start_time: float, end_time: float, app: str, title: str, domain: str, category: str, duration: float):
+    def insert_session(
+        self,
+        start_time: float,
+        end_time: float,
+        app: str,
+        title: str,
+        domain: str,
+        category: str,
+        duration: float,
+        is_focus_mode_session: bool = False,
+    ):
         """Inserts a completed session into the database."""
         self.cursor.execute('''
-            INSERT INTO activity_sessions (start_time, end_time, app, title, domain, category, duration)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (start_time, end_time, app, title, domain, category, duration))
+            INSERT INTO activity_sessions (
+                start_time, end_time, app, title, domain, category, duration, is_focus_mode_session
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            start_time,
+            end_time,
+            app,
+            title,
+            domain,
+            category,
+            duration,
+            int(bool(is_focus_mode_session)),
+        ))
         self.conn.commit()
     
     def cleanup_old_data(self):

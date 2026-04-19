@@ -13,8 +13,8 @@ from widgets.charts import TimelineBarChart, DonutChart, CategoryBar
 from ui.ui_effects import apply_soft_shadow
 
 from styles.theme import (
-    BG_MAIN, BG_CARD, BG_CARD_ALT, BORDER,
-    ACCENT, ACCENT_PURPLE,
+    BG_MAIN, BG_CARD, BG_CARD_ALT, BORDER, BORDER_LIGHT,
+    ACCENT, ACCENT_PURPLE, ACCENT_GLOW,
     TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED,
     GREEN, YELLOW,
 )
@@ -53,6 +53,9 @@ def _card(radius: int = 14) -> QFrame:
             border: 1px solid {BORDER};
             border-radius: {radius}px;
         }}
+        QFrame:hover {{
+            border: 1px solid {BORDER_LIGHT};
+        }}
     """)
     return f
 
@@ -68,7 +71,10 @@ class ActivityTimelineCard(QFrame):
             QFrame {{
                 background-color: {BG_CARD};
                 border: 1px solid {BORDER};
-                border-radius: 14px;
+                border-radius: 16px;
+            }}
+            QFrame:hover {{
+                border: 1px solid {BORDER_LIGHT};
             }}
         """)
         self._build()
@@ -129,7 +135,10 @@ class PeakProductivityCard(QFrame):
             QFrame {{
                 background-color: {BG_CARD};
                 border: 1px solid {BORDER};
-                border-radius: 14px;
+                border-radius: 16px;
+            }}
+            QFrame:hover {{
+                border: 1px solid {BORDER_LIGHT};
             }}
         """)
         self._build()
@@ -187,30 +196,30 @@ class PeakProductivityCard(QFrame):
         v.addLayout(legend)
 
     def update_data(self, timeline_data: list, time_frame: str = "day"):
-        # We calculate the focus duration per hour
+        # Productivity only counts inside Focus Mode sessions.
         hour_durations = [0] * 24
+        productive_cats = {
+            "coding",
+            "learning",
+            "writing",
+            "communication",
+            "designing",
+            "planning",
+            "reading",
+            "meetings",
+        }
         for s in timeline_data:
             cat = s.get("category", "").lower()
-            if cat in ["coding", "learning", "writing", "communication"]:
-                st_hour = int(s["start"])
-                # Extract duration in minutes from duration string "Xh Ym" or "Xm"
-                duration_str = s.get("duration", "0m")
-                mins = 0
-                if "h" in duration_str and "m" in duration_str:
-                    parts = duration_str.split("h")
-                    try:
-                        mins = int(parts[0].strip()) * 60 + int(parts[1].replace("m", "").strip())
-                    except ValueError:
-                        pass
-                elif "m" in duration_str:
-                    try:
-                        mins = int(duration_str.replace("m", "").strip())
-                    except ValueError:
-                        pass
-                
-                # Assign this duration mostly to the start hour (simple approximation)
-                if 0 <= st_hour < 24:
-                    hour_durations[st_hour] += mins
+            if not bool(s.get("is_focus_mode_session")) or cat not in productive_cats:
+                continue
+
+            st_hour = int(s.get("start", 0))
+            duration_seconds = float(s.get("duration_seconds", 0.0) or 0.0)
+            mins = max(1, int(duration_seconds // 60)) if duration_seconds > 0 else 0
+
+            # Assign this duration mostly to the start hour (simple approximation)
+            if 0 <= st_hour < 24:
+                hour_durations[st_hour] += mins
 
         # Update blocks
         max_dur = max(hour_durations) if max(hour_durations) > 0 else 1
@@ -226,12 +235,12 @@ class PeakProductivityCard(QFrame):
 
         if peak_hour is None or peak_minutes <= 0:
             self._peak_summary.setText(
-                f"No strong focus hour in {frame_label} yet. Keep tracking to reveal your peak time."
+                f"No Focus Mode productivity in {frame_label} yet. Start a sprint to reveal your peak hour."
             )
         else:
             hour_label = datetime.time(hour=peak_hour).strftime("%I:%M %p").lstrip("0")
             self._peak_summary.setText(
-                f"Best focus window in {frame_label}: {hour_label} ({peak_minutes} min productive time)."
+                f"Best Focus Mode window in {frame_label}: {hour_label} ({peak_minutes} min productive time)."
             )
 
         for h in range(24):
@@ -696,7 +705,7 @@ class AnalyticsPage(QWidget):
             QFrame {{
                 background-color: {BG_CARD};
                 border: 1px solid {BORDER};
-                border-radius: 10px;
+                border-radius: 12px;
             }}
         """)
         tab_h = QHBoxLayout(tab_frame)
@@ -721,19 +730,21 @@ class AnalyticsPage(QWidget):
 
         # Share button
         share_btn = QPushButton("  ⇗  Share")
-        share_btn.setFixedSize(100, 36)
+        share_btn.setFixedSize(110, 38)
         share_btn.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
         share_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         share_btn.setStyleSheet(f"""
             QPushButton {{
-                background-color: {ACCENT};
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #6366f1, stop:1 #a855f7);
                 color: white;
                 border: none;
-                border-radius: 10px;
-                font-weight: 600;
+                border-radius: 11px;
+                font-weight: 700;
             }}
             QPushButton:hover {{
-                background-color: #2563eb;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #818cf8, stop:1 #c084fc);
             }}
         """)
         h.addWidget(share_btn)
@@ -752,10 +763,11 @@ class AnalyticsPage(QWidget):
             if tf == self.time_frame:
                 btn.setStyleSheet(f"""
                     QPushButton {{
-                        background-color: {BG_CARD_ALT};
-                        color: {TEXT_PRIMARY};
+                        background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                            stop:0 #6366f1, stop:1 #a855f7);
+                        color: white;
                         border: none;
-                        border-radius: 7px;
+                        border-radius: 8px;
                         font-weight: 700;
                     }}
                 """)
@@ -765,9 +777,9 @@ class AnalyticsPage(QWidget):
                         background: transparent;
                         color: {TEXT_SECONDARY};
                         border: none;
-                        border-radius: 7px;
+                        border-radius: 8px;
                     }}
-                    QPushButton:hover {{ color:{TEXT_PRIMARY}; }}
+                    QPushButton:hover {{ color:{TEXT_PRIMARY}; background:{BG_CARD_ALT}; }}
                 """)
 
     def _toggle_sidebar(self):

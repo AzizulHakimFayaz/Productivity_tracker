@@ -1,31 +1,53 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
-import site
+import importlib.util
 
 # ── Locate onnxruntime DLLs ──────────────────────────────────────────────────
 # PyInstaller cannot auto-detect native C-extension DLLs inside onnxruntime.
-# We collect them explicitly so FastEmbed works inside the EXE.
+# We use importlib.util.find_spec() which reliably finds the actual package
+# location regardless of how Python was installed (site.getsitepackages()
+# can return the base prefix instead of Lib\site-packages on some installs).
 def _find_onnxruntime_binaries():
+    spec = importlib.util.find_spec('onnxruntime')
+    if spec is None or spec.origin is None:
+        print('WARNING: onnxruntime not found — DLLs will NOT be bundled!')
+        return []
+    onnx_dir = os.path.dirname(spec.origin)
+    capi = os.path.join(onnx_dir, 'capi')
     bins = []
-    for sp in site.getsitepackages():
-        capi = os.path.join(sp, 'onnxruntime', 'capi')
-        if os.path.isdir(capi):
-            for f in os.listdir(capi):
-                if f.endswith('.dll') or f.endswith('.pyd'):
-                    src = os.path.join(capi, f)
-                    bins.append((src, 'onnxruntime/capi'))
+    if os.path.isdir(capi):
+        for f in os.listdir(capi):
+            if f.endswith('.dll') or f.endswith('.pyd'):
+                bins.append((os.path.join(capi, f), 'onnxruntime/capi'))
+    else:
+        print(f'WARNING: onnxruntime/capi not found at {capi}')
+    print(f'[spec] onnxruntime DLLs found: {[b[0] for b in bins]}')
     return bins
 
 def _find_fastembed_data():
-    datas = []
-    for sp in site.getsitepackages():
-        fe_dir = os.path.join(sp, 'fastembed')
-        if os.path.isdir(fe_dir):
-            datas.append((fe_dir, 'fastembed'))
-    return datas
+    spec = importlib.util.find_spec('fastembed')
+    if spec is None or spec.origin is None:
+        print('WARNING: fastembed not found — data will NOT be bundled!')
+        return []
+    fe_dir = os.path.dirname(spec.origin)
+    print(f'[spec] fastembed dir: {fe_dir}')
+    return [(fe_dir, 'fastembed')]
 
 ONNX_BINS  = _find_onnxruntime_binaries()
 FE_DATAS   = _find_fastembed_data()
+
+# UPX must NOT compress these — it corrupts native extension binaries
+# and causes "DLL initialization routine failed" at runtime.
+UPX_EXCLUDE = [
+    'onnxruntime.dll',
+    'onnxruntime_providers_shared.dll',
+    'onnxruntime_pybind11_state.pyd',
+    'tokenizers.pyd',
+    'tokenizers.dll',
+    'vcruntime*.dll',
+    'msvcp*.dll',
+    'api-ms-*.dll',
+]
 
 a = Analysis(
     ['main.py'],
@@ -50,7 +72,7 @@ a = Analysis(
     ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=['rthook_onnx.py'],
     excludes=[],
     noarchive=False,
     optimize=0,
@@ -68,7 +90,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    upx_exclude=[],
+    upx_exclude=UPX_EXCLUDE,
     runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
